@@ -9,12 +9,16 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
 	"github.com/gobwas/glob"
 )
+
+type requestPair struct {
+	w http.ResponseWriter
+	r *http.Request
+}
 
 type App struct {
 	ServerName   string   `toml:"server_name"`
@@ -26,8 +30,9 @@ type App struct {
 	backendUrls  []*url.URL
 	compiledGlob glob.Glob
 	semaphore    chan struct{}
-	requestQueue chan *http.Request
+	requestQueue chan requestPair
 	proxy        *httputil.ReverseProxy
+	once         sync.Once
 }
 
 type Global struct {
@@ -48,7 +53,6 @@ var (
 )
 
 func main() {
-	// -fフラグで設定ファイルパスを受け取る
 	configPath := flag.String("f", "config.toml", "Path to config.toml")
 	flag.Parse()
 
@@ -86,17 +90,15 @@ func loadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// バックエンドURLの事前処理
 	for appName := range cfg.Apps {
 		app := cfg.Apps[appName]
-		// ワイルドカードコンパイル
+
 		g, err := glob.Compile(app.ServerName)
 		if err != nil {
 			return nil, fmt.Errorf("invalid server_name pattern: %w", err)
 		}
 		app.compiledGlob = g
 
-		// バックエンドURL変換
 		app.backendUrls = make([]*url.URL, len(app.Backends))
 		for i, b := range app.Backends {
 			u, err := url.Parse(b)
@@ -106,13 +108,17 @@ func loadConfig(path string) (*Config, error) {
 			app.backendUrls[i] = u
 		}
 
-		// セマフォとキュー初期化
 		app.semaphore = make(chan struct{}, app.MaxRequests)
-		app.requestQueue = make(chan *http.Request, app.QueueSize)
+		app.requestQueue = make(chan requestPair, app.QueueSize)
 		app.proxy = &httputil.ReverseProxy{
 			Director:       directorFunc(app),
 			ModifyResponse: modifyResponseFunc(app),
 		}
+
+		// キュー監視workerは一度だけ起動
+		app.once.Do(func() {
+			go app.queueWorker()
+		})
 
 		cfg.Apps[appName] = app
 	}
@@ -132,11 +138,7 @@ func directorFunc(app *App) func(*http.Request) {
 
 func modifyResponseFunc(app *App) func(*http.Response) error {
 	return func(resp *http.Response) error {
-		// レスポンス処理後にセマフォを解放
-		defer func() {
-			<-app.semaphore
-			processQueue(app)
-		}()
+		// セマフォはServeHTTPのdeferで解放するのでここでは不要
 		return nil
 	}
 }
@@ -148,11 +150,9 @@ func (app *App) getNextBackend() *url.URL {
 
 func requestHandler(w http.ResponseWriter, r *http.Request) {
 	configLock.RLock()
-	defer configLock.RUnlock()
-
 	cfg := config.Load().(*Config)
+	configLock.RUnlock()
 
-	// マッチするアプリを検索
 	var matchedApp *App
 	for _, app := range cfg.Apps {
 		if app.compiledGlob != nil && app.compiledGlob.Match(r.Host) {
@@ -166,30 +166,36 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// セマフォ取得試行
+	// まずセマフォ取得を試みる
 	select {
 	case matchedApp.semaphore <- struct{}{}:
+		defer func() { <-matchedApp.semaphore }()
 		matchedApp.proxy.ServeHTTP(w, r)
+		return
 	default:
-		// キュー処理
-		select {
-		case matchedApp.requestQueue <- r:
-			<-matchedApp.requestQueue
-			matchedApp.proxy.ServeHTTP(w, r)
-		default:
-			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
-		}
+	}
+
+	// セマフォが埋まっていたらキューに入れる
+	select {
+	case matchedApp.requestQueue <- requestPair{w: w, r: r}:
+		// キューに入ったリクエストはworkerが処理するのでここでは何もしない
+		return
+	default:
+		http.Error(w, "Service unavailable (queue full)", http.StatusServiceUnavailable)
+		return
 	}
 }
 
-func processQueue(app *App) {
-	select {
-	case req := <-app.requestQueue:
-		go func() {
-			client := &http.Client{Timeout: 30 * time.Second}
-			client.Do(req)
-		}()
-	default:
+// キュー監視worker
+func (app *App) queueWorker() {
+	for {
+		reqPair := <-app.requestQueue
+		// セマフォが空くまで待つ
+		app.semaphore <- struct{}{}
+		go func(rp requestPair) {
+			defer func() { <-app.semaphore }()
+			app.proxy.ServeHTTP(rp.w, rp.r)
+		}(reqPair)
 	}
 }
 
