@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -16,8 +18,9 @@ import (
 )
 
 type requestPair struct {
-	w http.ResponseWriter
-	r *http.Request
+	w    http.ResponseWriter
+	r    *http.Request
+	body []byte
 }
 
 type App struct {
@@ -32,7 +35,7 @@ type App struct {
 	semaphore    chan struct{}
 	requestQueue chan requestPair
 	proxy        *httputil.ReverseProxy
-	once         sync.Once
+	workerOnce   sync.Once
 }
 
 type Global struct {
@@ -67,19 +70,20 @@ func main() {
 	global := cfg.Global
 	listenAddr := global.ListenPort
 
+	handler := http.HandlerFunc(requestHandler)
 	if global.TLSCertPath != "" && global.TLSKeyPath != "" {
 		log.Printf("Starting HTTPS server on %s", listenAddr)
 		log.Fatal(http.ListenAndServeTLS(
 			listenAddr,
 			global.TLSCertPath,
 			global.TLSKeyPath,
-			http.HandlerFunc(requestHandler),
+			handler,
 		))
 	} else {
 		log.Printf("Starting HTTP server on %s", listenAddr)
 		log.Fatal(http.ListenAndServe(
 			listenAddr,
-			http.HandlerFunc(requestHandler),
+			handler,
 		))
 	}
 }
@@ -90,9 +94,7 @@ func loadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	for appName := range cfg.Apps {
-		app := cfg.Apps[appName]
-
+	for _, app := range cfg.Apps {
 		g, err := glob.Compile(app.ServerName)
 		if err != nil {
 			return nil, fmt.Errorf("invalid server_name pattern: %w", err)
@@ -111,16 +113,13 @@ func loadConfig(path string) (*Config, error) {
 		app.semaphore = make(chan struct{}, app.MaxRequests)
 		app.requestQueue = make(chan requestPair, app.QueueSize)
 		app.proxy = &httputil.ReverseProxy{
-			Director:       directorFunc(app),
-			ModifyResponse: modifyResponseFunc(app),
+			Director:     directorFunc(app),
+			ErrorHandler: errorHandlerFunc(app),
 		}
 
-		// キュー監視workerは一度だけ起動
-		app.once.Do(func() {
+		app.workerOnce.Do(func() {
 			go app.queueWorker()
 		})
-
-		cfg.Apps[appName] = app
 	}
 
 	return &cfg, nil
@@ -132,14 +131,14 @@ func directorFunc(app *App) func(*http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.URL.Path = target.Path + req.URL.Path
+		req.Host = target.Host
 		req.Header.Set("X-Forwarded-Host", req.Host)
 	}
 }
 
-func modifyResponseFunc(app *App) func(*http.Response) error {
-	return func(resp *http.Response) error {
-		// セマフォはServeHTTPのdeferで解放するのでここでは不要
-		return nil
+func errorHandlerFunc(app *App) func(http.ResponseWriter, *http.Request, error) {
+	return func(w http.ResponseWriter, r *http.Request, err error) {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 }
 
@@ -166,19 +165,27 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// まずセマフォ取得を試みる
+	// リクエストボディを読み込む
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+		return
+	}
+	r.Body.Close()
+
+	// セマフォを試みる
 	select {
 	case matchedApp.semaphore <- struct{}{}:
 		defer func() { <-matchedApp.semaphore }()
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		matchedApp.proxy.ServeHTTP(w, r)
 		return
 	default:
 	}
 
-	// セマフォが埋まっていたらキューに入れる
+	// セマフォが満杯ならキューに入れる
 	select {
-	case matchedApp.requestQueue <- requestPair{w: w, r: r}:
-		// キューに入ったリクエストはworkerが処理するのでここでは何もしない
+	case matchedApp.requestQueue <- requestPair{w: w, r: r, body: body}:
 		return
 	default:
 		http.Error(w, "Service unavailable (queue full)", http.StatusServiceUnavailable)
@@ -186,14 +193,13 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// キュー監視worker
 func (app *App) queueWorker() {
 	for {
 		reqPair := <-app.requestQueue
-		// セマフォが空くまで待つ
 		app.semaphore <- struct{}{}
 		go func(rp requestPair) {
 			defer func() { <-app.semaphore }()
+			rp.r.Body = io.NopCloser(bytes.NewReader(rp.body))
 			app.proxy.ServeHTTP(rp.w, rp.r)
 		}(reqPair)
 	}
@@ -223,7 +229,6 @@ func watchConfig(path string) {
 					log.Println("Config reload failed:", err)
 					continue
 				}
-
 				configLock.Lock()
 				config.Store(newCfg)
 				configLock.Unlock()
