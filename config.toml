@@ -1,0 +1,22 @@
+[global]
+max_queue_size = 1000
+listen_port = ":8443"
+tls_cert_path = "cert.pem"
+tls_key_path = "key.pem"
+
+[apps.api]
+server_name = "*.example.com"
+backends = [
+    "http://backend1:8080",
+    "http://backend2:8080"
+]
+max_requests = 100
+queue_size = 50
+load_balance = "round_robin"
+
+[apps.admin]
+server_name = "admin.example.com"
+backends = ["http://admin-backend:9000"]
+max_requests = 10
+queue_size = 5
+load_balance = "round_robin"
