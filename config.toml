@@ -1,15 +1,14 @@
 [global]
 max_queue_size = 1000
 listen_port = ":8443"
-tls_cert_path = "cert.pem"
-tls_key_path = "key.pem"
+# tls_cert_path = "cert.pem"
+# tls_key_path = "key.pem"
+cdn_port = ":4112"
+cdn_root = "/usr/local/pmao/ts/web"
 
 [apps.api]
 server_name = "*.example.com"
-backends = [
-    "http://backend1:8080",
-    "http://backend2:8080"
-]
+backends = ["http://backend1:8080", "http://backend2:8080"]
 max_requests = 100
 queue_size = 50
 load_balance = "round_robin"

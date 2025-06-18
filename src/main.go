@@ -43,6 +43,8 @@ type Global struct {
 	ListenPort   string `toml:"listen_port"`
 	TLSCertPath  string `toml:"tls_cert_path"`
 	TLSKeyPath   string `toml:"tls_key_path"`
+	CdnPort      string `toml:"cdn_port"` // Local Static Web Server Listen Port
+	CdnRoot      string `toml:"cdn_root"` // Local Static Web Server Root Directory
 }
 
 type Config struct {
@@ -55,9 +57,17 @@ var (
 	configLock sync.RWMutex
 )
 
+const VERSION = "v1.0.0"
+
 func main() {
+	v := flag.Bool("v", false, "show version and exit")
 	configPath := flag.String("f", "config.toml", "Path to config.toml")
 	flag.Parse()
+
+	if *v {
+		fmt.Println(VERSION)
+		return
+	}
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -70,9 +80,16 @@ func main() {
 	global := cfg.Global
 	listenAddr := global.ListenPort
 
+	// Run Local Static Web Server
+	go func() {
+		http.Handle("/", http.FileServer(http.Dir(global.CdnRoot)))
+		log.Printf("Starting Local Static Web Server on %s", global.CdnPort)
+		log.Fatal(http.ListenAndServe(global.CdnPort, nil))
+	}()
+
 	handler := http.HandlerFunc(requestHandler)
 	if global.TLSCertPath != "" && global.TLSKeyPath != "" {
-		log.Printf("Starting HTTPS server on %s", listenAddr)
+		log.Printf("Starting GRPXY Server on %s", listenAddr)
 		log.Fatal(http.ListenAndServeTLS(
 			listenAddr,
 			global.TLSCertPath,
@@ -80,7 +97,7 @@ func main() {
 			handler,
 		))
 	} else {
-		log.Printf("Starting HTTP server on %s", listenAddr)
+		log.Printf("Starting GRPXY Server on %s", listenAddr)
 		log.Fatal(http.ListenAndServe(
 			listenAddr,
 			handler,

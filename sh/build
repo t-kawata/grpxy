@@ -1,0 +1,41 @@
+#!/bin/bash
+
+while getopts ":o:a:" opt; do
+  case $opt in
+    o) OS="$OPTARG"
+    ;;
+    a) ARCH="$OPTARG"
+    ;;
+    \?) echo "Invalid option -$OPTARG" >&2
+    ;;
+  esac
+done
+
+CMD=""
+BINARY_NAME="grpxy"
+
+if [ "${OS}" = "" ]; then
+  echo "Let's take a OS of this env."
+else
+  CMD="${CMD}GOOS=${OS} "
+  BINARY_NAME="${BINARY_NAME}-${OS}"
+fi
+
+if [ "${ARCH}" = "" ]; then
+  echo "Let's take a ARCH of this env."
+else
+  CMD="${CMD}GOARCH=${ARCH} "
+  BINARY_NAME="${BINARY_NAME}-${ARCH}"
+fi
+
+VERSION=$(cat main.go | grep "const VERSION" | awk -F'"' '{print $2}')
+
+echo "Current version is ${VERSION}."
+
+BINARY_NAME="${BINARY_NAME}-${VERSION}"
+
+CMD="${CMD}go build -o ../dist/${BINARY_NAME} main.go"
+echo $CMD
+eval $CMD
+
+exit 0
