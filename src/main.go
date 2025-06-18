@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -57,7 +58,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v1.0.0"
+const VERSION = "v1.0.1"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -75,15 +76,20 @@ func main() {
 	}
 	config.Store(cfg)
 
-	go watchConfig(*configPath)
-
 	global := cfg.Global
 	listenAddr := global.ListenPort
+
+	err = os.MkdirAll(global.CdnRoot, os.ModePerm)
+	if err != nil {
+		log.Fatalf("Failed to create local static web root directory: %s", global.CdnRoot)
+	}
+
+	go watchConfig(*configPath)
 
 	// Run Local Static Web Server
 	go func() {
 		http.Handle("/", http.FileServer(http.Dir(global.CdnRoot)))
-		log.Printf("Starting Local Static Web Server on %s", global.CdnPort)
+		log.Printf("Starting Local Static Web Server on %s with root-dir: %s", global.CdnPort, global.CdnRoot)
 		log.Fatal(http.ListenAndServe(global.CdnPort, nil))
 	}()
 
