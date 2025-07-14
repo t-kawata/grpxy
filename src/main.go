@@ -58,7 +58,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v1.0.3"
+const VERSION = "v1.0.4"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -183,17 +183,16 @@ func (app *App) getNextBackend() *url.URL {
 }
 
 func requestHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "*")
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-	w.Header().Set("Access-Control-Expose-Headers", "*")
-	w.Header().Set("Access-Control-Max-Age", "86400")
-	w.Header().Set("X-Frame-Options", "ALLOWALL")
-	w.Header().Set("Content-Security-Policy", "frame-ancestors *")
-
-	// プリフライトリクエスト(OPTIONS)への対応
 	if r.Method == http.MethodOptions {
+		// プリフライトリクエストのみここでCORSヘッダーを付与
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("X-Frame-Options", "ALLOWALL")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
