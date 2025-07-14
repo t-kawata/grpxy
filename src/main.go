@@ -58,7 +58,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v1.0.4"
+const VERSION = "v1.0.5"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -140,6 +140,16 @@ func loadConfig(path string) (*Config, error) {
 			ErrorHandler: errorHandlerFunc(app),
 			ModifyResponse: func(resp *http.Response) error {
 				h := resp.Header
+				// 既存のCORS関連ヘッダーを全て削除
+				h.Del("Access-Control-Allow-Origin")
+				h.Del("Access-Control-Allow-Methods")
+				h.Del("Access-Control-Allow-Headers")
+				h.Del("Access-Control-Allow-Credentials")
+				h.Del("Access-Control-Expose-Headers")
+				h.Del("Access-Control-Max-Age")
+				h.Del("X-Frame-Options")
+				h.Del("Content-Security-Policy")
+				// 必要なヘッダーを再セット
 				h.Set("Access-Control-Allow-Origin", "*")
 				h.Set("Access-Control-Allow-Methods", "*")
 				h.Set("Access-Control-Allow-Headers", "*")
