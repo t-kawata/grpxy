@@ -58,7 +58,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v1.0.1"
+const VERSION = "v1.0.2"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -138,6 +138,18 @@ func loadConfig(path string) (*Config, error) {
 		app.proxy = &httputil.ReverseProxy{
 			Director:     directorFunc(app),
 			ErrorHandler: errorHandlerFunc(app),
+			ModifyResponse: func(resp *http.Response) error {
+				h := resp.Header
+				h.Set("Access-Control-Allow-Origin", "*")
+				h.Set("Access-Control-Allow-Methods", "*")
+				h.Set("Access-Control-Allow-Headers", "*")
+				h.Set("Access-Control-Allow-Credentials", "true")
+				h.Set("Access-Control-Expose-Headers", "*")
+				h.Set("Access-Control-Max-Age", "86400")
+				h.Set("X-Frame-Options", "ALLOWALL")
+				h.Set("Content-Security-Policy", "frame-ancestors *")
+				return nil
+			},
 		}
 
 		app.workerOnce.Do(func() {
