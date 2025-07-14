@@ -58,7 +58,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v1.0.5"
+const VERSION = "v1.0.6"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -183,6 +183,15 @@ func directorFunc(app *App) func(*http.Request) {
 
 func errorHandlerFunc(app *App) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
+		// CORSヘッダーを必ず付与
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("X-Frame-Options", "ALLOWALL")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 }
@@ -220,6 +229,15 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedApp == nil {
+		// マッチしないアプリケーションの場合もCORSヘッダーを付与
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("X-Frame-Options", "ALLOWALL")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
 		http.Error(w, "No matching application", http.StatusNotFound)
 		return
 	}
@@ -227,6 +245,15 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	// リクエストボディを読み込む
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// エラー時もCORSヘッダーを付与
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("X-Frame-Options", "ALLOWALL")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
 		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 		return
 	}
@@ -247,6 +274,15 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	case matchedApp.requestQueue <- requestPair{w: w, r: r, body: body}:
 		return
 	default:
+		// キューが満杯の場合もCORSヘッダーを付与
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("X-Frame-Options", "ALLOWALL")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
 		http.Error(w, "Service unavailable (queue full)", http.StatusServiceUnavailable)
 		return
 	}
