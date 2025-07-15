@@ -65,6 +65,7 @@ backends = [
 max_requests = 100
 queue_size = 50
 load_balance = "round_robin"
+debug = false
 
 [apps.admin]
 server_name = "admin.example.com"
@@ -72,6 +73,7 @@ backends = ["http://admin-backend:9000"]
 max_requests = 10
 queue_size = 5
 load_balance = "round_robin"
+debug = false
 ```
 
 #### 各設定項目の説明

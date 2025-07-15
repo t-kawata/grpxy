@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 実行回数（引数で指定、デフォルト10回）
-COUNT=${1:-10}
+COUNT=${1:-30}
 
 # 非同期で curl を実行
 for ((i=1; i<=COUNT; i++)); do

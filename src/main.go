@@ -24,6 +24,7 @@ type App struct {
 	MaxRequests  int      `toml:"max_requests"`
 	QueueSize    int      `toml:"queue_size"`
 	LoadBalance  string   `toml:"load_balance"`
+	Debug        bool     `toml:"debug"`
 	currentIndex uint32
 	backendUrls  []*url.URL
 	compiledGlob glob.Glob
@@ -50,7 +51,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v2.0.0"
+const VERSION = "v2.0.1"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -226,7 +227,12 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	// まずキューに入れる（QueueSizeで制限）
 	select {
 	case matchedApp.queueSlots <- struct{}{}:
-		defer func() { <-matchedApp.queueSlots }()
+		defer func() {
+			<-matchedApp.queueSlots
+			if matchedApp.Debug {
+				fmt.Printf("Running-Request: %d, Queue: %d\n", len(matchedApp.semaphore), len(matchedApp.queueSlots))
+			}
+		}()
 	default:
 		setCORSHeaders(w.Header())
 		http.Error(w, "Service unavailable (queue full)", http.StatusServiceUnavailable)
@@ -236,6 +242,10 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	// セマフォを取得（MaxRequestsで制限）- ここでブロッキング
 	matchedApp.semaphore <- struct{}{}
 	defer func() { <-matchedApp.semaphore }()
+
+	if matchedApp.Debug {
+		fmt.Printf("Running-Request: %d, Queue: %d\n", len(matchedApp.semaphore), len(matchedApp.queueSlots))
+	}
 
 	// リクエストボディを復元
 	r.Body = io.NopCloser(bytes.NewReader(body))
