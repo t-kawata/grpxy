@@ -18,12 +18,6 @@ import (
 	"github.com/gobwas/glob"
 )
 
-type requestPair struct {
-	w    http.ResponseWriter
-	r    *http.Request
-	body []byte
-}
-
 type App struct {
 	ServerName   string   `toml:"server_name"`
 	Backends     []string `toml:"backends"`
@@ -34,18 +28,16 @@ type App struct {
 	backendUrls  []*url.URL
 	compiledGlob glob.Glob
 	semaphore    chan struct{}
-	requestQueue chan requestPair
+	queueSlots   chan struct{}
 	proxy        *httputil.ReverseProxy
-	workerOnce   sync.Once
 }
 
 type Global struct {
-	MaxQueueSize int    `toml:"max_queue_size"`
-	ListenPort   string `toml:"listen_port"`
-	TLSCertPath  string `toml:"tls_cert_path"`
-	TLSKeyPath   string `toml:"tls_key_path"`
-	CdnPort      string `toml:"cdn_port"` // Local Static Web Server Listen Port
-	CdnRoot      string `toml:"cdn_root"` // Local Static Web Server Root Directory
+	ListenPort  string `toml:"listen_port"`
+	TLSCertPath string `toml:"tls_cert_path"`
+	TLSKeyPath  string `toml:"tls_key_path"`
+	CdnPort     string `toml:"cdn_port"` // Local Static Web Server Listen Port
+	CdnRoot     string `toml:"cdn_root"` // Local Static Web Server Root Directory
 }
 
 type Config struct {
@@ -58,7 +50,7 @@ var (
 	configLock sync.RWMutex
 )
 
-const VERSION = "v1.0.6"
+const VERSION = "v2.0.0"
 
 func main() {
 	v := flag.Bool("v", false, "show version and exit")
@@ -133,8 +125,12 @@ func loadConfig(path string) (*Config, error) {
 			app.backendUrls[i] = u
 		}
 
+		// セマフォで同時実行数を制限
 		app.semaphore = make(chan struct{}, app.MaxRequests)
-		app.requestQueue = make(chan requestPair, app.QueueSize)
+
+		// キューサイズで待機数を制限
+		app.queueSlots = make(chan struct{}, app.QueueSize)
+
 		app.proxy = &httputil.ReverseProxy{
 			Director:     directorFunc(app),
 			ErrorHandler: errorHandlerFunc(app),
@@ -150,24 +146,24 @@ func loadConfig(path string) (*Config, error) {
 				h.Del("X-Frame-Options")
 				h.Del("Content-Security-Policy")
 				// 必要なヘッダーを再セット
-				h.Set("Access-Control-Allow-Origin", "*")
-				h.Set("Access-Control-Allow-Methods", "*")
-				h.Set("Access-Control-Allow-Headers", "*")
-				h.Set("Access-Control-Allow-Credentials", "true")
-				h.Set("Access-Control-Expose-Headers", "*")
-				h.Set("Access-Control-Max-Age", "86400")
-				h.Set("X-Frame-Options", "ALLOWALL")
-				h.Set("Content-Security-Policy", "frame-ancestors *")
+				setCORSHeaders(h)
 				return nil
 			},
 		}
-
-		app.workerOnce.Do(func() {
-			go app.queueWorker()
-		})
 	}
 
 	return &cfg, nil
+}
+
+func setCORSHeaders(h http.Header) {
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Allow-Methods", "*")
+	h.Set("Access-Control-Allow-Headers", "*")
+	h.Set("Access-Control-Allow-Credentials", "true")
+	h.Set("Access-Control-Expose-Headers", "*")
+	h.Set("Access-Control-Max-Age", "86400")
+	h.Set("X-Frame-Options", "ALLOWALL")
+	h.Set("Content-Security-Policy", "frame-ancestors *")
 }
 
 func directorFunc(app *App) func(*http.Request) {
@@ -183,15 +179,7 @@ func directorFunc(app *App) func(*http.Request) {
 
 func errorHandlerFunc(app *App) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
-		// CORSヘッダーを必ず付与
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "*")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-		w.Header().Set("X-Frame-Options", "ALLOWALL")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
+		setCORSHeaders(w.Header())
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 }
@@ -203,15 +191,7 @@ func (app *App) getNextBackend() *url.URL {
 
 func requestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
-		// プリフライトリクエストのみここでCORSヘッダーを付与
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "*")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-		w.Header().Set("X-Frame-Options", "ALLOWALL")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
+		setCORSHeaders(w.Header())
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -229,15 +209,7 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedApp == nil {
-		// マッチしないアプリケーションの場合もCORSヘッダーを付与
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "*")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-		w.Header().Set("X-Frame-Options", "ALLOWALL")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
+		setCORSHeaders(w.Header())
 		http.Error(w, "No matching application", http.StatusNotFound)
 		return
 	}
@@ -245,59 +217,31 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	// リクエストボディを読み込む
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		// エラー時もCORSヘッダーを付与
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "*")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-		w.Header().Set("X-Frame-Options", "ALLOWALL")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
+		setCORSHeaders(w.Header())
 		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 		return
 	}
 	r.Body.Close()
 
-	// セマフォを試みる
+	// まずキューに入れる（QueueSizeで制限）
 	select {
-	case matchedApp.semaphore <- struct{}{}:
-		defer func() { <-matchedApp.semaphore }()
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		matchedApp.proxy.ServeHTTP(w, r)
-		return
+	case matchedApp.queueSlots <- struct{}{}:
+		defer func() { <-matchedApp.queueSlots }()
 	default:
-	}
-
-	// セマフォが満杯ならキューに入れる
-	select {
-	case matchedApp.requestQueue <- requestPair{w: w, r: r, body: body}:
-		return
-	default:
-		// キューが満杯の場合もCORSヘッダーを付与
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Expose-Headers", "*")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-		w.Header().Set("X-Frame-Options", "ALLOWALL")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
+		setCORSHeaders(w.Header())
 		http.Error(w, "Service unavailable (queue full)", http.StatusServiceUnavailable)
 		return
 	}
-}
 
-func (app *App) queueWorker() {
-	for {
-		reqPair := <-app.requestQueue
-		app.semaphore <- struct{}{}
-		go func(rp requestPair) {
-			defer func() { <-app.semaphore }()
-			rp.r.Body = io.NopCloser(bytes.NewReader(rp.body))
-			app.proxy.ServeHTTP(rp.w, rp.r)
-		}(reqPair)
-	}
+	// セマフォを取得（MaxRequestsで制限）- ここでブロッキング
+	matchedApp.semaphore <- struct{}{}
+	defer func() { <-matchedApp.semaphore }()
+
+	// リクエストボディを復元
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	// プロキシ実行
+	matchedApp.proxy.ServeHTTP(w, r)
 }
 
 func watchConfig(path string) {

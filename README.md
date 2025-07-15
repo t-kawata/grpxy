@@ -50,7 +50,6 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -node
 
 ```
 [global]
-max_queue_size = 1000
 listen_port = ":8443"
 tls_cert_path = "cert.pem"
 tls_key_path = "key.pem"
